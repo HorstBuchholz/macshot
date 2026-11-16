@@ -1,0 +1,132 @@
+name: Build App (ad-hoc signed)
+
+# Builds macshot without a Developer ID certificate and uploads the app as a
+# workflow artifact. Meant for forks and feature branches: build-release.yml
+# needs the signing and notarization secrets and publishes a release.
+#
+# The app is ad-hoc signed and not notarized:
+#   - Gatekeeper blocks the first launch of a downloaded copy. Allow it under
+#     System Settings > Privacy & Security > "Open Anyway", or run
+#     `xattr -dr com.apple.quarantine /Applications/macshot.app`.
+#   - Every build has a new signature, so macOS asks for Screen Recording
+#     permission again after replacing the app.
+#   - The build number is far above the official releases' so Sparkle doesn't
+#     offer to replace this build with an official one.
+on:
+  workflow_dispatch:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-app-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-26        # Xcode 26 + macOS 26 SDK, as in build-release.yml
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Select Xcode
+        run: |
+          XC=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          if [ -z "$XC" ]; then XC=$(ls -d /Applications/Xcode*.app | sort -V | tail -1); fi
+          echo "Using $XC"
+          sudo xcode-select -s "$XC/Contents/Developer"
+          xcodebuild -version
+
+      - name: Set version
+        run: |
+          # Newest CHANGELOG entry, marked as a fork build.
+          BASE=$(sed -nE 's/^## \[([^]]+)\].*/\1/p' CHANGELOG.md | head -1)
+          [ -n "$BASE" ] || BASE="0.0.0"
+          echo "VERSION=${BASE}-fork.${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
+          # Official builds use their run number (a few hundred) as the Sparkle
+          # version; stay well above it so no official update is offered.
+          echo "BUILD_NUMBER=$((100000 + GITHUB_RUN_NUMBER))" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project macshot.xcodeproj \
+            -scheme macshot \
+            -configuration Release \
+            -derivedDataPath build \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            MARKETING_VERSION="$VERSION" \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+            build \
+            | tee xcodebuild.log \
+            | { grep -E "error:|\*\* BUILD" || true; }
+          exit ${PIPESTATUS[0]}
+
+      # Same order as build-release.yml (innermost first, no --deep on the app
+      # so the XPC services keep their own, unsandboxed signatures), but with
+      # the ad-hoc identity. No hardened runtime: its library validation
+      # rejects ad-hoc signed frameworks.
+      - name: Sign ad hoc
+        run: |
+          APP="build/Build/Products/Release/macshot.app"
+          test -d "$APP"
+
+          sign() { echo "Signing: $1"; codesign --force --sign - "$1"; }
+
+          find "$APP/Contents" -name "*.xpc" -print0 | while IFS= read -r -d '' f; do sign "$f"; done
+          find "$APP/Contents" -name "*.app" -print0 | while IFS= read -r -d '' f; do sign "$f"; done
+          AUTOUPDATE="$APP/Contents/Frameworks/Sparkle.framework/Versions/B/Autoupdate"
+          if [ -f "$AUTOUPDATE" ]; then sign "$AUTOUPDATE"; fi
+          find "$APP/Contents" -name "*.dylib" -print0 | while IFS= read -r -d '' f; do sign "$f"; done
+          find "$APP/Contents" -name "*.framework" -print0 | while IFS= read -r -d '' f; do sign "$f"; done
+
+          echo "Signing main app: $APP"
+          codesign --force --sign - --entitlements macshot/macshot.entitlements "$APP"
+          codesign --verify --deep --strict "$APP"
+
+          while IFS= read -r -d '' xpc; do
+            ENT=$(codesign -d --entitlements - "$xpc" 2>&1 || true)
+            if echo "$ENT" | grep -q "app-sandbox"; then
+              echo "ERROR: $xpc has sandbox entitlements"
+              exit 1
+            fi
+          done < <(find "$APP/Contents" -name "*.xpc" -print0)
+
+      - name: Package DMG
+        run: |
+          APP="build/Build/Products/Release/macshot.app"
+          STAGING="$RUNNER_TEMP/dmg-staging"
+          rm -rf "$STAGING"
+          mkdir -p "$STAGING"
+          cp -R "$APP" "$STAGING/"
+          ln -s /Applications "$STAGING/Applications"
+          hdiutil create -volname "macshot" -srcfolder "$STAGING" -ov -format UDZO "macshot-$VERSION.dmg"
+          {
+            echo "## macshot $VERSION (build $BUILD_NUMBER)"
+            echo
+            echo "Ad-hoc signed, not notarized. Download the artifact below, open the DMG and drag macshot to Applications."
+            echo "On first launch allow it under System Settings > Privacy & Security > Open Anyway,"
+            echo "or run \`xattr -dr com.apple.quarantine /Applications/macshot.app\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload app
+        uses: actions/upload-artifact@v4
+        with:
+          name: macshot-${{ env.VERSION }}
+          path: macshot-${{ env.VERSION }}.dmg
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload build log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log
+          path: xcodebuild.log
+          retention-days: 7

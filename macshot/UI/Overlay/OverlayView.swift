@@ -47,7 +47,7 @@ extension OverlayViewDelegate {
 enum UndoEntry {
     case added(Annotation)  // annotation was added; undo removes it
     case deleted(Annotation, Int)  // annotation was deleted at index; undo re-inserts it
-    /// Image transform (crop/flip/canvas growth): stores the previous image and
+    /// Image transform (crop/flip/rotation/canvas growth): stores the previous image and
     /// a snapshot of every annotation the transform moved, so undo puts both
     /// back together. `previousSnappedWindowImage` is non-nil only for
     /// transforms that also changed the separately-captured window image
@@ -3921,6 +3921,163 @@ class OverlayView: NSView {
 
         cachedCompositedImage = nil
         needsDisplay = true
+    }
+
+    /// Rotate the image a quarter turn (editor only: the canvas swaps width and
+    /// height, which the fullscreen overlay can't do). Annotations turn with
+    /// the image, so the result looks like the flattened picture rotated.
+    func rotateImage(clockwise: Bool) {
+        guard isEditorMode else { return }
+        // A text box still being typed belongs to the picture being rotated.
+        commitTextFieldIfNeeded()
+        guard let original = screenshotImage,
+              let rotated = Self.quarterTurned(original, clockwise: clockwise)
+        else { return }
+
+        let prevImage = original.copy() as! NSImage
+        undoStack.append(.imageTransform(previousImage: prevImage, previousSnappedWindowImage: nil,
+                                         annotationSnapshots: annotations.map { ($0, $0.clone()) }))
+        redoStack.removeAll()
+
+        let oldCanvas = selectionRect
+        screenshotImage = rotated
+        selectionRect = NSRect(origin: oldCanvas.origin, size: rotated.size)
+        rotateAnnotationsWithCanvas(clockwise: clockwise, from: oldCanvas)
+        rebindEffectSourcesToCanvas()
+
+        cachedCompositedImage = nil
+        // Also refreshes the top bar's pixel size; the zoom level stays as it is.
+        layoutEditorDocument(forImageSize: rotated.size)
+        needsDisplay = true
+    }
+
+    /// A pixel-exact quarter turn of `image`: the bitmap is redrawn at its own
+    /// pixel size and the point size swaps with it, so a Retina capture stays
+    /// Retina and nothing is resampled.
+    static func quarterTurned(_ image: NSImage, clockwise: Bool) -> NSImage? {
+        guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+        let w = cgImage.width
+        let h = cgImage.height
+        guard w > 0, h > 0 else { return nil }
+
+        // Preserve the source image's color space so colors stay correct; fall
+        // back to sRGB for a space a BGRA bitmap context can't use (gray, indexed).
+        let bitmapInfo = CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
+        var context: CGContext?
+        for space in [cgImage.colorSpace, CGColorSpace(name: CGColorSpace.sRGB)] {
+            guard let space else { continue }
+            context = CGContext(
+                data: nil, width: h, height: w,
+                bitsPerComponent: 8,
+                bytesPerRow: 0, space: space,
+                bitmapInfo: bitmapInfo)
+            if context != nil { break }
+        }
+        guard let ctx = context else { return nil }
+
+        // Exact integer matrices (not rotate(by:), whose cos(π/2) isn't quite 0)
+        // so every source pixel lands on exactly one destination pixel.
+        // Bottom-left origin: clockwise sends (x, y) to (y, w - x),
+        // counterclockwise to (h - y, x).
+        ctx.interpolationQuality = .none
+        if clockwise {
+            ctx.concatenate(CGAffineTransform(a: 0, b: -1, c: 1, d: 0, tx: 0, ty: CGFloat(w)))
+        } else {
+            ctx.concatenate(CGAffineTransform(a: 0, b: 1, c: -1, d: 0, tx: CGFloat(h), ty: 0))
+        }
+        ctx.draw(cgImage, in: CGRect(x: 0, y: 0, width: w, height: h))
+        guard let turned = ctx.makeImage() else { return nil }
+
+        return NSImage(cgImage: turned, size: NSSize(width: image.size.height, height: image.size.width))
+    }
+
+    /// Turn every annotation with the canvas after a quarter turn of the image.
+    /// `oldCanvas` is the selection rect before the turn; its origin is kept.
+    ///
+    /// - Geometry (lines, arrows, strokes, rectangles, ellipses, censors,
+    ///   loupes, highlights) is remapped point by point. A rectangle or ellipse
+    ///   that was already rotated keeps its angle: its box swaps width and
+    ///   height, which is the same shape a quarter turn further.
+    /// - Baked pixels (censors, image stamps) are turned pixel for pixel, so a
+    ///   censor reopened from history, which has no source to re-bake from,
+    ///   never drops to its see-through preview.
+    /// - Content with an orientation of its own that can't be redrawn sideways
+    ///   (text, numbers, emoji stamps) keeps its box, moves to where its centre
+    ///   went and gains a quarter turn of annotation rotation.
+    private func rotateAnnotationsWithCanvas(clockwise: Bool, from oldCanvas: NSRect) {
+        let turn: (NSPoint) -> NSPoint = { p in
+            let x = p.x - oldCanvas.minX
+            let y = p.y - oldCanvas.minY
+            return clockwise
+                ? NSPoint(x: oldCanvas.minX + y, y: oldCanvas.minY + oldCanvas.width - x)
+                : NSPoint(x: oldCanvas.minX + oldCanvas.height - y, y: oldCanvas.minY + x)
+        }
+        let turnRect: (NSRect) -> NSRect = { r in
+            let a = turn(NSPoint(x: r.minX, y: r.minY))
+            let b = turn(NSPoint(x: r.maxX, y: r.maxY))
+            return NSRect(x: min(a.x, b.x), y: min(a.y, b.y), width: abs(a.x - b.x), height: abs(a.y - b.y))
+        }
+        // The view isn't flipped, so a positive annotation rotation is counterclockwise.
+        let quarterTurn: CGFloat = clockwise ? -.pi / 2 : .pi / 2
+
+        for ann in annotations {
+            ann.outlineGlowImage = nil
+
+            // An image stamp backed by pixels turns pixel for pixel, so its box
+            // stays the area it covers (the canvas grows to fit those boxes).
+            // An emoji stamp is drawn on demand and stays sharp at any size, so
+            // it takes the rotation path below instead of being rasterized.
+            var turnedStamp: NSImage?
+            if ann.tool == .stamp, let image = ann.stampImage {
+                let reps = image.representations
+                let drawnOnDemand = reps.isEmpty || reps.contains { $0 is NSCustomImageRep || $0 is NSPDFImageRep }
+                if ann.isCaptureStamp || !drawnOnDemand {
+                    turnedStamp = Self.quarterTurned(image, clockwise: clockwise)
+                }
+            }
+
+            if ann.tool == .text || ann.tool == .number || (ann.tool == .stamp && turnedStamp == nil) {
+                let box = ann.boundingRect
+                let center = NSPoint(x: box.midX, y: box.midY)
+                let target = turn(center)
+                ann.move(dx: target.x - center.x, dy: target.y - center.y)
+                ann.rotation = Self.normalizedRotation(ann.rotation + quarterTurn)
+                continue
+            }
+
+            ann.startPoint = turn(ann.startPoint)
+            ann.endPoint = turn(ann.endPoint)
+            if let cp = ann.controlPoint { ann.controlPoint = turn(cp) }
+            if let pts = ann.points { ann.points = pts.map(turn) }
+            if let anchors = ann.anchorPoints { ann.anchorPoints = anchors.map(turn) }
+            if let source = ann.loupeSourceRect { ann.loupeSourceRect = turnRect(source) }
+            if let turnedStamp { ann.stampImage = turnedStamp }
+
+            switch ann.tool {
+            case .pixelate, .blur:
+                // Keep the old bake if it can't be turned: a stretched censor
+                // still hides what it covers, an unbaked one would not.
+                if let bake = ann.bakedBlurNSImage {
+                    ann.bakedBlurNSImage = Self.quarterTurned(bake, clockwise: clockwise) ?? bake
+                }
+            case .loupe:
+                // A loupe with a source is re-baked from the rotated image by
+                // `rebindEffectSourcesToCanvas`; one without keeps its picture.
+                if ann.sourceImage == nil, let bake = ann.bakedBlurNSImage {
+                    ann.bakedBlurNSImage = Self.quarterTurned(bake, clockwise: clockwise) ?? bake
+                }
+            default:
+                break
+            }
+        }
+    }
+
+    /// Wrap an annotation rotation into (-π, π] and make a full turn exactly 0,
+    /// so four quarter turns leave an annotation "not rotated" again.
+    static func normalizedRotation(_ angle: CGFloat) -> CGFloat {
+        var a = angle.truncatingRemainder(dividingBy: 2 * .pi)
+        if a > .pi { a -= 2 * .pi } else if a <= -.pi { a += 2 * .pi }
+        return abs(a) < 1e-9 ? 0 : a
     }
 
     /// Add a captured image as a draggable stamp annotation, placed below the current canvas.

@@ -322,6 +322,9 @@ class Annotation {
         textDrawRect = src.textDrawRect
         rotation = src.rotation
         censorMode = src.censorMode
+        // Rotating the image turns an image stamp's pixels with it; undo has to
+        // put the unturned picture back along with the unturned box.
+        stampImage = src.stampImage
         // A snapshot's bake already matches the geometry and settings being
         // restored. Re-baking instead would need `sourceImage`, which censors
         // restored from history/projects or moved over from the overlay don't
