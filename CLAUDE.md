@@ -108,7 +108,7 @@ macshot/
 │   ├── Editor/
 │   │   ├── EditorView.swift            # OverlayView subclass: NSScrollView mode, no selection chrome
 │   │   ├── DetachedEditorWindowController.swift  # Standalone editor window (resizable, titled)
-│   │   ├── EditorTopBarView.swift      # NSView with crop, flip, zoom buttons
+│   │   ├── EditorTopBarView.swift      # NSView with crop, rotate, flip, zoom buttons
 │   │   ├── EditorDragHandleView.swift  # Top-bar handle: drag the edited image out as a file, click to copy
 │   │   ├── CenteringClipView.swift     # NSClipView subclass that centers document when smaller than clip
 │   │   ├── VideoEditorWindowController(+Export).swift  # Studio video editor window, actions, exports
@@ -268,7 +268,7 @@ The video editor is built around `VideoEditorDocument` (one `VideoProject`: time
 
 ### Undo/Redo
 
-`UndoEntry` enum: `.added(Annotation)`, `.deleted(Annotation, Int)`, `.propertyChange(...)`, `.imageTransform(...)`, `.measureCalibration(...)`, `.annotationsChange(...)` (several annotations moved together, e.g. a multi-selection drag or nudge: one step). An image transform that moves annotations (crop, flip, canvas growth) must store `annotationSnapshots` taken before it moves them; undo/redo restore them with the image. Stacks: `undoStack` / `redoStack`. Batch undo via `groupID` (e.g. auto-redact creates multiple annotations with same groupID, all undone together).
+`UndoEntry` enum: `.added(Annotation)`, `.deleted(Annotation, Int)`, `.propertyChange(...)`, `.imageTransform(...)`, `.measureCalibration(...)`, `.annotationsChange(...)` (several annotations moved together, e.g. a multi-selection drag or nudge: one step). An image transform that moves annotations (crop, flip, 90° rotation, canvas growth) must store `annotationSnapshots` taken before it moves them; undo/redo restore them with the image. Rotation (`rotateImage(clockwise:)`, editor only) also turns baked censor pixels and image-stamp pixels, so `Annotation.copyProperties` restores `stampImage` too. Stacks: `undoStack` / `redoStack`. Batch undo via `groupID` (e.g. auto-redact creates multiple annotations with same groupID, all undone together).
 
 **CRITICAL — transient `NSTextView` undo ownership:** `UndoManager` keeps undo-operation targets unowned. A disposable editable `NSTextView` that obtains the window's shared undo manager through the responder chain can therefore leave `_undoRedoTextOperation:` entries pointing at a deallocated view; the next Cmd+Z may crash in `_NSUndoStack popAndInvoke`. Every editable app-created text view with `allowsUndo = true` must use `ScopedUndoTextView` (or subclass it), never a plain `NSTextView`. Call `discardUndoHistory()` before removing and releasing an editing session. Read-only text views that cannot register editing actions are exempt. Do not move transient text editing back onto a window-level undo manager.
 
@@ -322,7 +322,7 @@ Pencil, Line, Arrow, Rectangle, Filled Rectangle, Ellipse, Marker/Highlighter, T
 - **Stamp tool:** Place emoji or custom images, load from file
 
 ### Output Actions
-Copy to clipboard, Save to file (PNG/JPEG/HEIC/WebP), Pin (floating always-on-top), OCR with translation (30+ languages), Upload to imgbb or Google Drive (OAuth2), Remove background (VNGenerateForegroundInstanceMaskRequest), Open in editor, Beautify (30 gradient styles including 7 mesh gradients on macOS 15+), Flip horizontal/vertical
+Copy to clipboard, Save to file (PNG/JPEG/HEIC/WebP), Pin (floating always-on-top), OCR with translation (30+ languages), Upload to imgbb or Google Drive (OAuth2), Remove background (VNGenerateForegroundInstanceMaskRequest), Open in editor, Beautify (30 gradient styles including 7 mesh gradients on macOS 15+), Flip horizontal/vertical, Rotate 90° left/right (editor)
 
 ### Advanced
 - **Editor Window:** Standalone resizable window for post-capture editing, full annotation tools, zoom 0.1x–8x via NSScrollView

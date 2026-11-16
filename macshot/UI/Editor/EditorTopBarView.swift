@@ -1,7 +1,7 @@
 import Cocoa
 
 /// Real NSView top bar for the editor window. Pinned to top of container.
-/// Contains: pixel dimensions, crop/flip/add-capture buttons, drag-out handle, zoom dropdown.
+/// Contains: pixel dimensions, crop/rotate/flip/add-capture buttons, drag-out handle, zoom dropdown.
 class EditorTopBarView: NSView {
 
     weak var overlayView: OverlayView?
@@ -26,12 +26,14 @@ class EditorTopBarView: NSView {
         sizeLabel.textColor = ToolbarLayout.iconColor.withAlphaComponent(0.45)
 
         let cropBtn = makeButton("crop", tooltip: L("Crop"), action: #selector(cropClicked))
+        let rotateLeftBtn = makeButton("rotate.left", tooltip: L("Rotate Left"), action: #selector(rotateLeftClicked))
+        let rotateRightBtn = makeButton("rotate.right", tooltip: L("Rotate Right"), action: #selector(rotateRightClicked))
         let flipHBtn = makeButton("arrow.left.and.right.righttriangle.left.righttriangle.right", tooltip: L("Flip Horizontal"), action: #selector(flipHClicked))
         let flipVBtn = makeButton("arrow.up.and.down.righttriangle.up.righttriangle.down", tooltip: L("Flip Vertical"), action: #selector(flipVClicked))
         let addCaptureBtn = makeButton("rectangle.badge.plus", tooltip: L("Add Capture"), action: #selector(addCaptureClicked))
         let saveProjectBtn = makeButton("square.and.arrow.down.on.square",
             tooltip: L("Save as Editable Project (⇧⌘S)"), action: #selector(saveProjectClicked))
-        toolButtons = [cropBtn, flipHBtn, flipVBtn, addCaptureBtn, saveProjectBtn]
+        toolButtons = [cropBtn, rotateLeftBtn, rotateRightBtn, flipHBtn, flipVBtn, addCaptureBtn, saveProjectBtn]
 
         // Zoom dropdown button
         zoomButton = NSButton()
@@ -50,7 +52,7 @@ class EditorTopBarView: NSView {
         addSubview(border)
 
         // Layout with constraints
-        for v: NSView in [sizeLabel, cropBtn, flipHBtn, flipVBtn, addCaptureBtn, saveProjectBtn, dragHandle, zoomButton] {
+        for v: NSView in [sizeLabel, cropBtn, rotateLeftBtn, rotateRightBtn, flipHBtn, flipVBtn, addCaptureBtn, saveProjectBtn, dragHandle, zoomButton] {
             v.translatesAutoresizingMaskIntoConstraints = false
             addSubview(v)
         }
@@ -66,7 +68,17 @@ class EditorTopBarView: NSView {
             cropBtn.widthAnchor.constraint(equalToConstant: 24),
             cropBtn.heightAnchor.constraint(equalToConstant: 22),
 
-            flipHBtn.leadingAnchor.constraint(equalTo: cropBtn.trailingAnchor, constant: 4),
+            rotateLeftBtn.leadingAnchor.constraint(equalTo: cropBtn.trailingAnchor, constant: 4),
+            rotateLeftBtn.centerYAnchor.constraint(equalTo: centerYAnchor),
+            rotateLeftBtn.widthAnchor.constraint(equalToConstant: 24),
+            rotateLeftBtn.heightAnchor.constraint(equalToConstant: 22),
+
+            rotateRightBtn.leadingAnchor.constraint(equalTo: rotateLeftBtn.trailingAnchor, constant: 4),
+            rotateRightBtn.centerYAnchor.constraint(equalTo: centerYAnchor),
+            rotateRightBtn.widthAnchor.constraint(equalToConstant: 24),
+            rotateRightBtn.heightAnchor.constraint(equalToConstant: 22),
+
+            flipHBtn.leadingAnchor.constraint(equalTo: rotateRightBtn.trailingAnchor, constant: 4),
             flipHBtn.centerYAnchor.constraint(equalTo: centerYAnchor),
             flipHBtn.widthAnchor.constraint(equalToConstant: 24),
             flipHBtn.heightAnchor.constraint(equalToConstant: 22),
@@ -271,6 +283,8 @@ class EditorTopBarView: NSView {
         ov.needsDisplay = true
     }
 
+    @objc private func rotateLeftClicked() { overlayView?.rotateImage(clockwise: false) }
+    @objc private func rotateRightClicked() { overlayView?.rotateImage(clockwise: true) }
     @objc private func flipHClicked() { overlayView?.flipImageHorizontally() }
     @objc private func flipVClicked() { overlayView?.flipImageVertically() }
     @objc private func saveProjectClicked() {

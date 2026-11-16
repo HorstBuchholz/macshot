@@ -112,7 +112,7 @@ brew install --cask macshot
 - Standalone resizable window with full annotation tools, beautify preview
 - **Add Capture** — capture additional screen regions and compose them into a single image, drag to reposition
 - **Paste image** — `Cmd+V` drops a clipboard image into the canvas as a draggable layer
-- Crop (with rule-of-thirds grid), flip H/V, zoom 0.1x–8x
+- Crop (with rule-of-thirds grid), rotate 90° left/right, flip H/V, zoom 0.1x–8x
 - Top bar with pixel dimensions, zoom dropdown (presets, fit canvas, zoom in/out)
 
 ### Beautify
