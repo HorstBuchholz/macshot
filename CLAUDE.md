@@ -450,6 +450,10 @@ gh workflow run build-release.yml --ref main -f tag=v3.8.0-beta.3
 ```
 This dispatches from main (which has `workflow_dispatch` support) and reads the tag from the input parameter. The tag must already exist on the remote.
 
+### Builds without the signing secrets (forks, branches)
+
+`.github/workflows/build-app.yml` (manual dispatch, and every pull request) builds the normal variant in Release, signs it ad hoc in the same innermost-first order as the release workflow (no hardened runtime: library validation rejects ad-hoc frameworks) and uploads `macshot-<version>-fork.<run>.dmg` as a workflow artifact. Nothing is published. The build number is `100000 + run number` so Sparkle never offers an official release over it. The app isn't notarized: Gatekeeper needs "Open Anyway" once, and Screen Recording permission is asked again for every new build.
+
 ### Notes
 
 - `MARKETING_VERSION` in `project.pbxproj` is only used for local dev builds. CI always overrides it.
